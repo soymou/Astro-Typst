@@ -53,11 +53,6 @@ export default function rehypeTypstCustom() {
       const isTypstBlock = node.tagName === 'code' && classes.includes('language-typst');
 
       if (isMathInline || isMathDisplay || isTypstBlock) {
-        console.log('Found math:', {
-          type: isMathDisplay || isTypstBlock ? 'display' : 'inline',
-          code: node.children[0]?.value
-        });
-
         const processNode = async () => {
           const code = node.children[0]?.value || '';
 
@@ -65,16 +60,10 @@ export default function rehypeTypstCustom() {
           const hasTypstDisplaySpaces = /^\s+.*\s+$/.test(code);
           const isDisplayMode = isMathDisplay || parent?.tagName === 'pre' || hasTypstDisplaySpaces;
 
-          console.log('Processing Typst:', { code, isDisplayMode, hasTypstDisplaySpaces, parentTag: parent?.tagName });
-
           try {
             const svg = await renderTypstToSVG(code.trim(), isDisplayMode);
-            console.log('SVG rendered:', svg?.substring(0, 100));
-
             const root = fromHtmlIsomorphic(svg, { fragment: true });
             const svgNode = root.children[0];
-
-            console.log('SVG node:', svgNode?.type, svgNode?.tagName);
 
             if (svgNode) {
               const height = parseFloat(svgNode.properties['dataHeight'] || '11');
@@ -89,20 +78,17 @@ export default function rehypeTypstCustom() {
 
               if (isDisplayMode) {
                 if (parent && parent.type === 'element' && parent.tagName === 'pre') {
-                  console.log('Replacing <pre> parent with SVG (display mode)');
                   // Replace the entire <pre> with just the svg
                   parent.tagName = 'div';
                   parent.properties = { className: ['typst-display'] };
                   parent.children = [svgNode];
                 } else {
-                  console.log('Replacing math-display with SVG');
                   // For math-display that's not in <pre>
                   node.tagName = 'div';
                   node.properties = { className: ['typst-display'] };
                   node.children = [svgNode];
                 }
               } else {
-                console.log('Replacing inline math with SVG');
                 // For inline math, replace with span
                 node.tagName = 'span';
                 node.properties = { className: ['typst-inline'], style: 'display: inline-block;' };
