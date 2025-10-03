@@ -4,12 +4,21 @@ import { fromHtmlIsomorphic } from 'hast-util-from-html-isomorphic';
 
 let compilerInstance;
 
-async function renderTypstToSVG(code, displayMode = false) {
+async function renderTypstToSVG(code, displayMode = false, isCodeBlock = false, importsString = '') {
   const compiler = compilerInstance || (compilerInstance = NodeCompiler.create());
 
-  const template = displayMode
-    ? `#set page(height: auto, width: auto, margin: 0pt)\n$ ${code} $`
-    : `#set page(height: auto, width: auto, margin: 0pt)\n$${code}$`;
+  let template;
+  // Only add imports to code blocks, not to math expressions (inline/display)
+  const imports = (isCodeBlock && importsString) ? `${importsString}\n` : '';
+
+  if (isCodeBlock) {
+    // For code blocks, user provides complete Typst code
+    template = `${imports}#set page(height: auto, width: auto, margin: 0pt)\n${code}`;
+  } else if (displayMode) {
+    template = `#set page(height: auto, width: auto, margin: 0pt)\n$ ${code} $`;
+  } else {
+    template = `#set page(height: auto, width: auto, margin: 0pt)\n$${code}$`;
+  }
 
   const docRes = compiler.compile({ mainFileContent: template });
 
@@ -25,10 +34,133 @@ async function renderTypstToSVG(code, displayMode = false) {
 }
 
 export default function rehypeTypstCustom() {
-  return async (tree) => {
+  return async (tree, file) => {
     const promises = [];
 
+    // Get Typst imports from frontmatter
+    const typstImports = file.data?.astro?.frontmatter?.typstImports || [];
+    const importsString = Array.isArray(typstImports) ? typstImports.join('\n') : typstImports;
+
     visit(tree, 'element', (node, index, parent) => {
+      // Look for custom typst block divs
+      if (node.tagName === 'div' && node.properties?.dataTypstBlock !== undefined && parent) {
+        const processNode = async () => {
+          // Get the text content from all text children
+          let code = '';
+          const collectText = (n) => {
+            if (n.type === 'text') {
+              code += n.value;
+            } else if (n.children) {
+              n.children.forEach(collectText);
+            }
+          };
+          node.children.forEach(collectText);
+
+          code = code.trim();
+          console.log('Typst block code:', code);
+
+          if (!code) {
+            return;
+          }
+
+          try {
+            const svg = await renderTypstToSVG(code, false, true, importsString);
+            const root = fromHtmlIsomorphic(svg, { fragment: true });
+            const svgNode = root.children[0];
+
+            if (svgNode) {
+              const height = parseFloat(svgNode.properties['dataHeight'] || '11');
+              const width = parseFloat(svgNode.properties['dataWidth'] || '11');
+              const defaultEm = 11;
+
+              svgNode.properties.height = `${height / defaultEm}em`;
+              svgNode.properties.width = `${width / defaultEm}em`;
+
+              // Replace the div with a typst-display div containing the SVG
+              parent.children[index] = {
+                type: 'element',
+                tagName: 'div',
+                properties: { className: ['typst-display'] },
+                children: [svgNode]
+              };
+            }
+          } catch (error) {
+            console.error('Typst rendering error:', error);
+            node.children = [{
+              type: 'text',
+              value: `[Typst Error: ${error.message}]`
+            }];
+          }
+        };
+
+        promises.push(processNode());
+        return;
+      }
+
+      // Look for code blocks with language-typst class (inside pre tags)
+      if (node.tagName === 'pre' && parent) {
+        const codeNode = node.children?.find(child => child.type === 'element' && child.tagName === 'code');
+        if (codeNode) {
+          const classes = codeNode.properties?.className || [];
+          if (classes.includes('language-typst')) {
+            // Check if eval is disabled
+            if (classes.includes('typst-no-eval')) {
+              return; // Skip processing, just show the code
+            }
+
+            // Process the typst code block
+            const processNode = async () => {
+              let code = codeNode.children[0]?.value || '';
+
+              if (!code || code.trim() === '') {
+                return;
+              }
+
+              // Unescape HTML entities
+              code = code
+                .replace(/&#123;/g, '{')
+                .replace(/&#125;/g, '}');
+
+              // Convert smart quotes to straight quotes
+              code = code.replace(/[\u201C\u201D]/g, '"');
+              code = code.replace(/[\u2018\u2019]/g, "'");
+
+              try {
+                const svg = await renderTypstToSVG(code, false, true, importsString);
+                const root = fromHtmlIsomorphic(svg, { fragment: true });
+                const svgNode = root.children[0];
+
+                if (svgNode) {
+                  const height = parseFloat(svgNode.properties['dataHeight'] || '11');
+                  const width = parseFloat(svgNode.properties['dataWidth'] || '11');
+                  const defaultEm = 11;
+
+                  svgNode.properties.height = `${height / defaultEm}em`;
+                  svgNode.properties.width = `${width / defaultEm}em`;
+
+                  // Replace the pre node with a div containing the SVG
+                  parent.children[index] = {
+                    type: 'element',
+                    tagName: 'div',
+                    properties: { className: ['typst-display'] },
+                    children: [svgNode]
+                  };
+                }
+              } catch (error) {
+                console.error('Typst rendering error:', error);
+                codeNode.children = [{
+                  type: 'text',
+                  value: `[Typst Error: ${error.message}]`
+                }];
+              }
+            };
+
+            promises.push(processNode());
+            return;
+          }
+        }
+      }
+
       // Look for inline code with our class markers
       if (node.tagName === 'code') {
         const classes = node.properties?.className || [];
@@ -55,7 +187,7 @@ export default function rehypeTypstCustom() {
             const isDisplayMode = isMathDisplay;
 
             try {
-              const svg = await renderTypstToSVG(code, isDisplayMode);
+              const svg = await renderTypstToSVG(code, isDisplayMode, false, importsString);
               const root = fromHtmlIsomorphic(svg, { fragment: true });
               const svgNode = root.children[0];
 

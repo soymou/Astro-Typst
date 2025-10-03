@@ -1,24 +1,25 @@
-# rehype-typst & remark-typst
+# Typst Plugins for Astro/Starlight
 
-Custom [rehype](https://github.com/rehypejs/rehype) and [remark](https://github.com/remarkjs/remark) plugins that render math equations using [Typst](https://typst.app/) at build time, with native Typst syntax support.
+This directory contains custom remark and rehype plugins for rendering Typst code and math expressions in Astro/Starlight projects.
 
-## Features
+## Overview
 
-- 🚀 **Build-time rendering**: No client-side JavaScript needed
-- 🎨 **Dark mode support**: Automatic color adaptation for light/dark themes
-- 📝 **Multiple syntaxes**: Support for both `$...$` (via remark-math) and native Typst syntax
-- 🔄 **Inline and display modes**: Proper rendering of both inline and display math
-- 📏 **Responsive sizing**: Math adapts to surrounding text size
+The Typst integration consists of two plugins that work together to process Typst syntax in markdown files and convert it to SVG:
+
+1. **`remark-typst.js`** - Processes markdown AST to identify Typst code blocks and math expressions
+2. **`rehype-typst.js`** - Compiles identified Typst code to SVG using the Typst compiler
 
 ## Installation
+
+### Dependencies
 
 ```bash
 npm install @myriaddreamin/typst-ts-node-compiler unist-util-visit hast-util-from-html-isomorphic
 ```
 
-## Usage
+### Configuration
 
-### In your Astro config
+Add the plugins to your `astro.config.mjs`:
 
 ```js
 import remarkTypst from "./plugins/remark-typst.js";
@@ -29,119 +30,230 @@ export default defineConfig({
     remarkPlugins: [remarkTypst],
     rehypePlugins: [rehypeTypst],
   },
+  // ... rest of config
 });
 ```
 
-### CSS Setup
+## Features
 
-Add to your CSS file:
+### 1. Inline Math
+
+Use `$...$` for inline math (no spaces inside) and `$ ... $` (with spaces) for display math:
+
+```markdown
+Inline math: The natural numbers $NN$ and integers $ZZ$.
+
+Display math: $ x = (-b plus.minus sqrt(b^2 - 4a c))/(2a) $
+```
+
+### 2. Code Blocks
+
+Use fenced code blocks with the `typst` language to write full Typst code:
+
+````markdown
+```typst
+#import "@preview/cetz:0.2.2": canvas, draw
+
+#canvas({
+  draw.line((0, 0), (1, 1))
+  draw.circle((0.5, 0.5), radius: 0.3)
+})
+```
+````
+
+### 3. Disable Execution
+
+Use the `eval=false` parameter to show code without rendering:
+
+````markdown
+```typst eval=false
+#import "@preview/curryst:0.5.1": rule, prooftree
+
+#prooftree(
+  rule(
+    $Gamma tack.r f(a): B$,
+    $Gamma tack.r a: A$,
+    $Gamma tack.r f: A arrow.r B$
+  )
+)
+```
+````
+
+### 4. Frontmatter Imports
+
+Add Typst imports to your page frontmatter to avoid repeating them in every code block:
+
+```yaml
+---
+title: My Page
+typstImports:
+  - '#import "@preview/commute:0.3.0": node, arr, commutative-diagram'
+  - '#import "@preview/cetz:0.2.2": canvas, draw'
+---
+```
+
+All Typst code blocks on that page will automatically have these imports available.
+
+**Note:** Frontmatter imports only apply to code blocks (` ```typst `), not to inline math expressions.
+
+## How It Works
+
+### remark-typst.js
+
+This plugin runs during the markdown parsing phase and:
+
+1. **Detects Typst code blocks** (` ```typst `) and marks them with the `language-typst` class
+2. **Checks for `eval=false`** parameter and adds `typst-no-eval` class if present
+3. **Processes inline math** (`$...$`) and display math (`$ ... $`) in paragraphs and text nodes
+4. **Escapes curly braces** for MDX compatibility
+5. **Marks math expressions** with `typst-math-inline` or `typst-math-display` classes
+
+### rehype-typst.js
+
+This plugin runs during the HTML generation phase and:
+
+1. **Retrieves frontmatter imports** from `file.data.astro.frontmatter.typstImports`
+2. **Compiles Typst code** to SVG using `@myriaddreamin/typst-ts-node-compiler`
+3. **Skips compilation** for blocks marked with `typst-no-eval`
+4. **Prepends imports** to code blocks (not to inline math)
+5. **Wraps output** in appropriate containers (`typst-inline`, `typst-display`)
+6. **Sets SVG dimensions** based on Typst's output
+
+### Processing Pipeline
+
+```
+Markdown → remark-typst → MDAST with markers → rehype-typst → HTML with SVG
+```
+
+1. User writes Typst syntax in markdown
+2. `remark-typst.js` identifies and marks Typst content
+3. Markdown is converted to HTML
+4. `rehype-typst.js` compiles marked nodes to SVG
+5. Final HTML includes rendered Typst as SVG
+
+## Styling
+
+Add CSS to style the rendered Typst elements:
 
 ```css
-/* Typst inline rendering */
+/* Inline math */
 .typst-inline {
-  display: inline-block !important;
+  display: inline-block;
   vertical-align: middle;
-  font-size: inherit;
 }
 
 .typst-inline svg {
-  display: inline-block !important;
-  height: 2em !important;
+  display: inline-block;
   width: auto !important;
 }
 
+/* Display math */
 .typst-display {
-  display: block !important;
+  display: block;
   text-align: center;
   margin: 1em 0;
-  font-size: inherit;
 }
 
 .typst-display svg {
+  width: auto !important;
   max-width: 100%;
-  height: auto;
+  display: inline-block;
 }
 
 /* Dark mode support */
-.typst-display svg,
-.typst-inline svg,
-svg.typst-doc {
-  filter: invert(0);
-}
-
-:root[data-theme='dark'] .typst-display svg,
-:root[data-theme='dark'] .typst-inline svg,
-:root[data-theme='dark'] svg.typst-doc {
+:root[data-theme='dark'] .typst-display > svg,
+:root[data-theme='dark'] .typst-inline > svg {
   filter: invert(1);
 }
 ```
 
-### Markdown Syntax
+## Examples
 
-The plugin uses Typst's native syntax with automatic mode detection:
+### Commutative Diagram
 
-#### Inline Math (no spaces inside `$`)
+````markdown
+```typst
+#import "@preview/commute:0.3.0": node, arr, commutative-diagram
+
+#commutative-diagram(
+  node((0, 0), $A$),
+  node((0, 1), $B$),
+  node((1, 0), $C$),
+  arr((0, 0), (0, 1), $f$),
+  arr((0, 0), (1, 0), $g$),
+  arr((0, 1), (1, 0), $h$)
+)
+```
+````
+
+### Proof Tree
+
+````markdown
+```typst
+#import "@preview/curryst:0.5.1": rule, prooftree
+
+#prooftree(
+  rule(
+    name: "app",
+    $Gamma tack.r f(a): B$,
+    $Gamma tack.r a: A$,
+    $Gamma tack.r f: A arrow.r B$
+  )
+)
+```
+````
+
+### Chemical Formulas
 
 ```markdown
-Inline math: $E = m c^2$ or $x^2 + y^2 = z^2$
+Water molecule: $H_2 O$
+
+Glucose: $C_6 H_(12) O_6$
 ```
 
-#### Display Math (spaces after `$` and before `$`)
+## Error Handling
 
-```markdown
-Display math with spaces: $ sum_(i=1)^n i = (n(n+1))/2 $
+Both plugins include error handling:
 
-Or use double dollar signs:
-$$
-integral_0^oo e^(-x^2) dif x = sqrt(pi)/2
-$$
+- **Compilation errors** are caught and displayed as error messages in the output
+- **Invalid Typst syntax** will show Typst's diagnostic messages
+- **Missing imports** will be reported by the Typst compiler
+
+## Performance
+
+The Typst compiler instance is cached and reused across compilations:
+
+```js
+let compilerInstance;
+const compiler = compilerInstance || (compilerInstance = NodeCompiler.create());
 ```
 
-**Key rule**:
-- `$math$` (no spaces) = **inline mode**
-- `$ math $` (with spaces) = **display mode** (centered block)
-- `$$...$$` = **display mode** (centered block)
+The compiler cache is periodically evicted to prevent memory issues:
 
-#### Examples
-
-```markdown
-Inline: The formula $a^2 + b^2 = c^2$ is Pythagorean theorem.
-
-Display: $ sum_(k=1)^n k = (n(n+1))/2 $
-
-Display with $$: $$lim_(x->oo) 1/x = 0$$
+```js
+compiler.evictCache(10);
 ```
 
-## How It Works
+## Troubleshooting
 
-1. **remark-typst** parses `$...$` and `$$...$$` syntax and detects display mode based on spaces
-2. **rehype-typst** renders the math using Typst's compiler to SVG at build time
-3. The rendered SVG is injected into the HTML with appropriate styling classes
-4. CSS handles responsive sizing and dark mode adaptation
+### Math not rendering
 
-## Typst Syntax
+- Check that `$` delimiters are properly closed
+- For display math, ensure spaces: `$ expression $` not `$expression$`
+- Verify curly braces are being escaped for MDX
 
-This plugin uses native Typst math syntax:
+### Code blocks not executing
 
-| Feature | Typst Syntax | Example |
-|---------|--------------|---------|
-| Fractions | `a/b` or `frac(a, b)` | `1/2` or `frac(1, 2)` |
-| Subscripts | `x_i` | `x_1, x_2` |
-| Superscripts | `x^2` | `e^(i pi)` |
-| Sum | `sum_(i=1)^n` | `sum_(k=1)^n k^2` |
-| Integral | `integral_a^b` | `integral_0^1 x dif x` |
-| Script letters | `cal(A)` | `cal(H)` (ℋ) |
-| Parentheses | `(...)` for grouping | `(a+b)^2` |
+- Ensure the language is specified as `typst`
+- Check that `eval=false` is not set when you want execution
+- Verify frontmatter imports are formatted correctly (array of strings)
 
-See [Typst Math Documentation](https://typst.app/docs/reference/math/) for full syntax reference.
+### Import errors
+
+- Frontmatter imports only work for code blocks, not inline math
+- Verify package names and versions in imports
+- Check that imports are in an array format in YAML
 
 ## License
 
-MIT
-
-## Credits
-
-Built with:
-- [@myriaddreamin/typst-ts-node-compiler](https://github.com/Myriad-Dreamin/typst.ts)
-- [unist-util-visit](https://github.com/syntax-tree/unist-util-visit)
-- [hast-util-from-html-isomorphic](https://github.com/syntax-tree/hast-util-from-html-isomorphic)
+These plugins are part of the project and follow the same license.
