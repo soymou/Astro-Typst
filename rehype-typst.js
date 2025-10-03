@@ -7,23 +7,9 @@ let compilerInstance;
 async function renderTypstToSVG(code, displayMode = false) {
   const compiler = compilerInstance || (compilerInstance = NodeCompiler.create());
 
-  // Check if code already has Typst math delimiters
-  const trimmedCode = code.trim();
-  const hasTypstDelimiters = trimmedCode.startsWith('$') && trimmedCode.endsWith('$');
-
-  // Detect display mode from Typst syntax: "$ ... $" with spaces indicates display mode
-  const isTypstDisplayMode = hasTypstDelimiters && /^\$\s+.*\s+\$$/.test(trimmedCode);
-
-  let template;
-  if (hasTypstDelimiters) {
-    // Use Typst syntax as-is
-    template = `#set page(height: auto, width: auto, margin: 0pt)\n${trimmedCode}`;
-  } else {
-    // Wrap in Typst math delimiters
-    template = displayMode
-      ? `#set page(height: auto, width: auto, margin: 0pt)\n$ ${trimmedCode} $`
-      : `#set page(height: auto, width: auto, margin: 0pt)\n#show math.equation: it => { box(it, inset: (top: 0.5em, bottom: 0.5em)) }\n$ ${trimmedCode} $`;
-  }
+  const template = displayMode
+    ? `#set page(height: auto, width: auto, margin: 0pt)\n$ ${code} $`
+    : `#set page(height: auto, width: auto, margin: 0pt)\n$${code}$`;
 
   const docRes = compiler.compile({ mainFileContent: template });
 
@@ -43,68 +29,65 @@ export default function rehypeTypstCustom() {
     const promises = [];
 
     visit(tree, 'element', (node, index, parent) => {
-      const classes = node.properties?.className || [];
+      // Look for inline code with our class markers
+      if (node.tagName === 'code') {
+        const classes = node.properties?.className || [];
+        const isMathInline = classes.includes('typst-math-inline');
+        const isMathDisplay = classes.includes('typst-math-display');
 
-      // Check for remark-math generated classes
-      const isMathInline = classes.includes('math-inline');
-      const isMathDisplay = classes.includes('math-display');
+        if (isMathInline || isMathDisplay) {
+          const processNode = async () => {
+            let code = node.children[0]?.value || '';
 
-      // Also support explicit typst code blocks
-      const isTypstBlock = node.tagName === 'code' && classes.includes('language-typst');
+            if (!code || code.trim() === '') {
+              return;
+            }
 
-      if (isMathInline || isMathDisplay || isTypstBlock) {
-        const processNode = async () => {
-          const code = node.children[0]?.value || '';
+            // Unescape HTML entities
+            code = code
+              .replace(/&#123;/g, '{')
+              .replace(/&#125;/g, '}');
 
-          // Check if the raw code has Typst display syntax (spaces after $ and before $)
-          const hasTypstDisplaySpaces = /^\s+.*\s+$/.test(code);
-          const isDisplayMode = isMathDisplay || parent?.tagName === 'pre' || hasTypstDisplaySpaces;
+            // Convert smart quotes to straight quotes
+            code = code.replace(/[\u201C\u201D]/g, '"');
+            code = code.replace(/[\u2018\u2019]/g, "'");
 
-          try {
-            const svg = await renderTypstToSVG(code.trim(), isDisplayMode);
-            const root = fromHtmlIsomorphic(svg, { fragment: true });
-            const svgNode = root.children[0];
+            const isDisplayMode = isMathDisplay;
 
-            if (svgNode) {
-              const height = parseFloat(svgNode.properties['dataHeight'] || '11');
-              const width = parseFloat(svgNode.properties['dataWidth'] || '11');
-              const defaultEm = 11;
+            try {
+              const svg = await renderTypstToSVG(code, isDisplayMode);
+              const root = fromHtmlIsomorphic(svg, { fragment: true });
+              const svgNode = root.children[0];
 
-              svgNode.properties.height = `${height / defaultEm}em`;
-              svgNode.properties.width = `${width / defaultEm}em`;
-              svgNode.properties.style = isDisplayMode
-                ? 'display: block; margin: 1em auto;'
-                : 'display: inline-block; vertical-align: middle;';
+              if (svgNode) {
+                const height = parseFloat(svgNode.properties['dataHeight'] || '11');
+                const width = parseFloat(svgNode.properties['dataWidth'] || '11');
+                const defaultEm = 11;
 
-              if (isDisplayMode) {
-                if (parent && parent.type === 'element' && parent.tagName === 'pre') {
-                  // Replace the entire <pre> with just the svg
-                  parent.tagName = 'div';
-                  parent.properties = { className: ['typst-display'] };
-                  parent.children = [svgNode];
-                } else {
-                  // For math-display that's not in <pre>
+                svgNode.properties.height = `${height / defaultEm}em`;
+                svgNode.properties.width = `${width / defaultEm}em`;
+
+                if (isDisplayMode) {
                   node.tagName = 'div';
                   node.properties = { className: ['typst-display'] };
                   node.children = [svgNode];
+                } else {
+                  node.tagName = 'span';
+                  node.properties = { className: ['typst-inline'] };
+                  node.children = [svgNode];
                 }
-              } else {
-                // For inline math, replace with span
-                node.tagName = 'span';
-                node.properties = { className: ['typst-inline'], style: 'display: inline-block;' };
-                node.children = [svgNode];
               }
+            } catch (error) {
+              console.error('Typst rendering error:', error);
+              node.children = [{
+                type: 'text',
+                value: `[Typst Error: ${error.message}]`
+              }];
             }
-          } catch (error) {
-            console.error('Typst rendering error:', error);
-            node.children = [{
-              type: 'text',
-              value: `[Typst Error: ${error.message}]`
-            }];
-          }
-        };
+          };
 
-        promises.push(processNode());
+          promises.push(processNode());
+        }
       }
     });
 

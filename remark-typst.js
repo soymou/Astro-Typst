@@ -1,110 +1,120 @@
 import { visit } from 'unist-util-visit';
 
 /**
- * Custom remark plugin for Typst math that preserves spaces
- * Detects:
+ * Remark plugin to detect Typst math syntax and mark it for processing
  * - $math$ (no spaces) → inline
  * - $ math $ (with spaces) → display
- * - $$math$$ → display
+ * Handles multi-line by processing at paragraph level
  */
 export default function remarkTypstMath() {
   return (tree) => {
-    visit(tree, 'text', (node, index, parent) => {
+    // Process paragraphs to concatenate text across line breaks
+    visit(tree, 'paragraph', (node, index, parent) => {
       if (!parent || index === null) return;
 
-      const text = node.value;
-      const parts = [];
+      // Concatenate all text content from the paragraph
+      let fullText = '';
+      const childMap = [];
+
+      for (let i = 0; i < node.children.length; i++) {
+        const child = node.children[i];
+        const startPos = fullText.length;
+
+        if (child.type === 'text') {
+          fullText += child.value;
+          childMap.push({ start: startPos, end: fullText.length, child, index: i });
+        } else {
+          // Non-text node (like strong, emphasis) - use placeholder
+          fullText += '\0';
+          childMap.push({ start: startPos, end: startPos + 1, child, index: i });
+        }
+      }
+
+      // Check if paragraph contains any math
+      if (!fullText.includes('$')) return;
+
+      const newChildren = [];
       let lastIndex = 0;
 
-      // Match $...$ patterns
-      const regex = /\$([^\$]+?)\$/g;
+      // Match $...$ patterns (use [\s\S] to match newlines)
+      const regex = /\$\$?([\s\S]+?)\$\$?/g;
       let match;
 
-      while ((match = regex.exec(text)) !== null) {
+      while ((match = regex.exec(fullText)) !== null) {
         const fullMatch = match[0];
         const content = match[1];
         const matchStart = match.index;
+        const matchEnd = matchStart + fullMatch.length;
 
-        // Add text before the match
-        if (matchStart > lastIndex) {
-          parts.push({
-            type: 'text',
-            value: text.slice(lastIndex, matchStart)
-          });
+        // Add all children/text between lastIndex and matchStart
+        for (const item of childMap) {
+          // Skip if before our window
+          if (item.end <= lastIndex) continue;
+          // Stop if after our window
+          if (item.start >= matchStart) break;
+
+          if (item.child.type === 'text') {
+            // Calculate what portion of this text node to include
+            const textStart = Math.max(0, lastIndex - item.start);
+            const textEnd = Math.min(item.child.value.length, matchStart - item.start);
+            const portion = item.child.value.slice(textStart, textEnd);
+
+            if (portion) {
+              newChildren.push({ type: 'text', value: portion });
+            }
+          } else if (fullText[item.start] !== '\0') {
+            // Non-text node within range
+            newChildren.push(item.child);
+          } else if (item.start >= lastIndex && item.end <= matchStart) {
+            // Placeholder node fully within range
+            newChildren.push(item.child);
+          }
         }
 
-        // Determine if it's display mode (has spaces on both sides)
-        const isDisplay = /^\s+.*\s+$/.test(content);
+        // Determine if display mode (has spaces after $ and before $)
+        const isDoubleDollar = fullMatch.startsWith('$$');
+        const hasSpaces = /^\s+[\s\S]*\s+$/.test(content);
+        const isDisplay = isDoubleDollar || hasSpaces;
         const cleanContent = content.trim();
 
-        // Create text node wrapped in code element
-        parts.push({
-          type: 'html',
-          value: `<code class="${isDisplay ? 'math-display' : 'math-inline'}">${cleanContent}</code>`
+        // Escape curly braces for MDX
+        const escaped = cleanContent
+          .replace(/\{/g, '&#123;')
+          .replace(/\}/g, '&#125;');
+
+        // Create inline code node with class marker
+        newChildren.push({
+          type: 'inlineCode',
+          value: escaped,
+          data: {
+            hProperties: {
+              className: [isDisplay ? 'typst-math-display' : 'typst-math-inline']
+            }
+          }
         });
 
-        lastIndex = matchStart + fullMatch.length;
+        lastIndex = matchEnd;
       }
 
-      // Add remaining text
-      if (lastIndex < text.length) {
-        parts.push({
-          type: 'text',
-          value: text.slice(lastIndex)
-        });
-      }
+      // Add remaining children after last math
+      for (const item of childMap) {
+        if (item.end <= lastIndex) continue;
 
-      // Replace node if we found math
-      if (parts.length > 0) {
-        parent.children.splice(index, 1, ...parts);
-        return index + parts.length;
-      }
-    });
+        if (item.child.type === 'text') {
+          const textStart = Math.max(0, lastIndex - item.start);
+          const portion = item.child.value.slice(textStart);
 
-    // Handle $$ display math blocks
-    visit(tree, 'text', (node, index, parent) => {
-      if (!parent || index === null) return;
-
-      const text = node.value;
-      const displayRegex = /\$\$([\s\S]+?)\$\$/g;
-      const parts = [];
-      let lastIndex = 0;
-      let match;
-
-      while ((match = displayRegex.exec(text)) !== null) {
-        const fullMatch = match[0];
-        const content = match[1];
-        const matchStart = match.index;
-
-        // Add text before the match
-        if (matchStart > lastIndex) {
-          parts.push({
-            type: 'text',
-            value: text.slice(lastIndex, matchStart)
-          });
+          if (portion) {
+            newChildren.push({ type: 'text', value: portion });
+          }
+        } else if (item.start >= lastIndex) {
+          newChildren.push(item.child);
         }
-
-        // Create display math node as HTML
-        parts.push({
-          type: 'html',
-          value: `<code class="math-display">${content.trim()}</code>`
-        });
-
-        lastIndex = matchStart + fullMatch.length;
       }
 
-      // Add remaining text
-      if (lastIndex < text.length) {
-        parts.push({
-          type: 'text',
-          value: text.slice(lastIndex)
-        });
-      }
-
-      // Replace node if we found math
-      if (parts.length > 0) {
-        parent.children.splice(index, 1, ...parts);
-        return index + parts.length;
+      // Replace paragraph children if we found math
+      if (newChildren.length > 0) {
+        node.children = newChildren;
       }
     });
   };
