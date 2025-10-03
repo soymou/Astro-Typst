@@ -1,6 +1,68 @@
 import { visit } from 'unist-util-visit';
 
 /**
+ * Process a single text string and extract math expressions
+ */
+function processTextNode(text) {
+  if (!text.includes('$')) return [{ type: 'text', value: text }];
+
+  const newNodes = [];
+  let lastIndex = 0;
+
+  const regex = /\$\$?([\s\S]+?)\$\$?/g;
+  let match;
+
+  while ((match = regex.exec(text)) !== null) {
+    const fullMatch = match[0];
+    const content = match[1];
+    const matchStart = match.index;
+    const matchEnd = matchStart + fullMatch.length;
+
+    // Add text before match
+    if (matchStart > lastIndex) {
+      newNodes.push({
+        type: 'text',
+        value: text.slice(lastIndex, matchStart)
+      });
+    }
+
+    // Determine if display mode
+    const isDoubleDollar = fullMatch.startsWith('$$');
+    const hasSpaces = /^\s+[\s\S]*\s+$/.test(content);
+    const isDisplay = isDoubleDollar || hasSpaces;
+    const cleanContent = content.trim();
+
+    // Escape curly braces for MDX
+    const escaped = cleanContent
+      .replace(/\{/g, '&#123;')
+      .replace(/\}/g, '&#125;');
+
+    // Create inline code node with class marker
+    newNodes.push({
+      type: 'inlineCode',
+      value: escaped,
+      data: {
+        hProperties: {
+          className: [isDisplay ? 'typst-math-display' : 'typst-math-inline']
+        }
+      }
+    });
+
+    lastIndex = matchEnd;
+  }
+
+  // Add remaining text
+  if (lastIndex < text.length) {
+    newNodes.push({
+      type: 'text',
+      value: text.slice(lastIndex)
+    });
+  }
+
+  return newNodes;
+}
+
+/**
  * Remark plugin to detect Typst math syntax and mark it for processing
  * - $math$ (no spaces) → inline
  * - $ math $ (with spaces) → display
@@ -8,7 +70,21 @@ import { visit } from 'unist-util-visit';
  */
 export default function remarkTypstMath() {
   return (tree) => {
-    // Process paragraphs to concatenate text across line breaks
+    // First pass: process text nodes inside strong/emphasis
+    visit(tree, ['strong', 'emphasis'], (node) => {
+      for (let i = 0; i < node.children.length; i++) {
+        const child = node.children[i];
+        if (child.type === 'text' && child.value.includes('$')) {
+          const newNodes = processTextNode(child.value);
+          if (newNodes.length > 1) {
+            node.children.splice(i, 1, ...newNodes);
+            i += newNodes.length - 1;
+          }
+        }
+      }
+    });
+
+    // Second pass: process paragraphs to concatenate text across line breaks
     visit(tree, 'paragraph', (node, index, parent) => {
       if (!parent || index === null) return;
 
